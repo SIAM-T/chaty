@@ -1,0 +1,76 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "usernames": {
+      ".read": "auth != null",
+      "$username": {
+        ".write": "auth != null && (!data.exists() || data.child('uid').val() === auth.uid) && newData.child('uid').val() === auth.uid",
+        ".validate": "newData.hasChildren(['uid']) && newData.child('uid').isString() && $username.length >= 3 && $username.length <= 20"
+      }
+    },
+
+    "users": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['uid', 'username', 'email'])",
+        "username": {
+          ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 20"
+        },
+        "displayName": {
+          ".validate": "newData.isString() && newData.val().length <= 50"
+        },
+        "statusMessage": {
+          ".validate": "newData.isString() && newData.val().length <= 150"
+        }
+      }
+    },
+
+    "presence": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "user_conversations": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$conversationId": {
+          ".write": "auth != null && (auth.uid === $uid || root.child('conversations').child($conversationId).child('participants').child(auth.uid).val() === true)"
+        }
+      }
+    },
+
+    "conversations": {
+      "$conversationId": {
+        ".read": "auth != null && data.child('participants').child(auth.uid).val() === true",
+        ".write": "auth != null && (!data.exists() ? newData.child('participants').child(auth.uid).val() === true : data.child('participants').child(auth.uid).val() === true)",
+        "participants": {
+          ".validate": "newData.hasChild(auth.uid)"
+        }
+      }
+    },
+
+    "messages": {
+      "$conversationId": {
+        ".read": "auth != null && root.child('conversations').child($conversationId).child('participants').child(auth.uid).val() === true",
+        "$messageId": {
+          ".write": "auth != null && root.child('conversations').child($conversationId).child('participants').child(auth.uid).val() === true && (!data.exists() ? newData.child('senderId').val() === auth.uid : data.child('senderId').val() === auth.uid)",
+          ".validate": "newData.hasChildren(['id', 'conversationId', 'senderId', 'text', 'timestamp']) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 4000"
+        }
+      }
+    },
+
+    "typing": {
+      "$conversationId": {
+        ".read": "auth != null && root.child('conversations').child($conversationId).child('participants').child(auth.uid).val() === true",
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid && root.child('conversations').child($conversationId).child('participants').child(auth.uid).val() === true"
+        }
+      }
+    }
+  }
+}

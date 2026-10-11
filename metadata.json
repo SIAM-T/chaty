@@ -1,0 +1,6 @@
+{
+  "name": "Chaty",
+  "description": "Real-time messaging application powered by Firebase with instant delivery, active presence, message editing, and smart unread tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

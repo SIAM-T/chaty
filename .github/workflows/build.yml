@@ -1,0 +1,106 @@
+name: Chaty CI & Release APK
+
+on:
+  push:
+    branches: [ "main", "master", "**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test-and-build:
+    name: Test and Assemble Release APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Configure Android SDK
+        run: |
+          SDK_DIR="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=${SDK_DIR}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_DIR}" >> "$GITHUB_ENV"
+          echo "${SDK_DIR}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "${SDK_DIR}/platform-tools" >> "$GITHUB_PATH"
+
+          if [ -x "${SDK_DIR}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "${SDK_DIR}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          fi
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Prepare Keystores for Signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD_SECRET: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD_SECRET: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${STORE_PASSWORD_SECRET}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${KEY_PASSWORD_SECRET}" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v \
+              -keystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+              -alias upload \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "chaty2026" \
+              -keypass "chaty2026" \
+              -dname "CN=Chaty, OU=Messenger, O=Chaty, L=Global, S=Global, C=US"
+
+            echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=chaty2026" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=chaty2026" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run Unit Tests
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Build Release APK
+        run: gradle :app:assembleRelease --no-daemon
+
+      - name: Verify and Package Release APK
+        run: |
+          ls -lh app/build/outputs/apk/release/
+          cp app/build/outputs/apk/release/app-release.apk \
+             app/build/outputs/apk/release/Chaty-Release.apk
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chaty-Release-APK
+          path: app/build/outputs/apk/release/Chaty-Release.apk
+          if-no-files-found: error
+          retention-days: 90
