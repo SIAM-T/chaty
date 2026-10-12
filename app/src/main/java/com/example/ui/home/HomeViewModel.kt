@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AuthRepository
 import com.example.data.ChatRepository
-import com.example.data.FirebaseManager
 import com.example.model.ConversationItem
 import com.example.model.UserProfile
 import kotlinx.coroutines.Job
@@ -20,12 +19,13 @@ data class HomeUiState(
     val currentUserProfile: UserProfile? = null,
     val conversations: List<ConversationItem> = emptyList(),
     val searchQuery: String = "",
-    val isLoadingConversations: Boolean = true,
-    // New Chat Dialog
+    val isLoadingConversations: Boolean = false, // Never block UI with indefinite spinners
+    // New Chat Dialog & User Search
     val isNewChatDialogOpen: Boolean = false,
     val newChatQuery: String = "",
     val isSearchingUser: Boolean = false,
-    val searchResultUser: UserProfile? = null,
+    val searchResults: List<UserProfile> = emptyList(),
+    val selectedUser: UserProfile? = null,
     val newChatError: String? = null,
     val isCreatingChat: Boolean = false,
     // Profile Dialog
@@ -61,11 +61,22 @@ class HomeViewModel(
     private var searchJob: Job? = null
 
     init {
-        // Collect active profile updates (handles both Firebase Auth and Instant session)
+        // Step 1: Immediately pick up active profile if available
+        authRepository.activeProfile.value?.let { profile ->
+            _uiState.update {
+                it.copy(
+                    currentUserProfile = profile,
+                    editDisplayName = profile.displayName,
+                    editStatusMessage = profile.statusMessage
+                )
+            }
+            startObservingConversations(profile.uid)
+        }
+
+        // Step 2: Observe active profile stream
         viewModelScope.launch {
             authRepository.activeProfile.collectLatest { profile ->
                 if (profile != null) {
-                    val uid = profile.uid
                     _uiState.update {
                         it.copy(
                             currentUserProfile = profile,
@@ -73,46 +84,25 @@ class HomeViewModel(
                             editStatusMessage = profile.statusMessage
                         )
                     }
-                    startObservingUser(uid)
-                    startObservingConversations(uid)
+                    startObservingUser(profile.uid)
+                    startObservingConversations(profile.uid)
                 }
             }
         }
 
-        // Also fallback to Firebase user or demo user
+        // Step 3: Fallback listener for auth state
         viewModelScope.launch {
             authRepository.currentUser.collectLatest { fbUser ->
                 if (fbUser != null) {
-                    val uid = fbUser.uid
-                    startObservingUser(uid)
-                    startObservingConversations(uid)
-                } else if (authRepository.activeProfile.value == null) {
-                    _uiState.update {
-                        it.copy(
-                            currentUserProfile = null,
-                            conversations = emptyList(),
-                            isLoadingConversations = false
-                        )
-                    }
+                    startObservingConversations(fbUser.uid)
                 }
             }
         }
 
+        // Step 4: Loading timeout safety - force loading to false after 400ms so user is NEVER trapped
         viewModelScope.launch {
-            authRepository.demoUser.collectLatest { demo ->
-                if (demo != null) {
-                    val uid = demo.uid
-                    _uiState.update {
-                        it.copy(
-                            currentUserProfile = demo,
-                            editDisplayName = demo.displayName,
-                            editStatusMessage = demo.statusMessage
-                        )
-                    }
-                    startObservingUser(uid)
-                    startObservingConversations(uid)
-                }
-            }
+            delay(400)
+            _uiState.update { it.copy(isLoadingConversations = false) }
         }
     }
 
@@ -152,12 +142,17 @@ class HomeViewModel(
     }
 
     fun openNewChatDialog() {
+        val currentUid = _uiState.value.currentUserProfile?.uid ?: authRepository.getCurrentUserOrFallback().uid
+        val initialSuggested = authRepository.searchUsers("", currentUid)
         _uiState.update {
             it.copy(
                 isNewChatDialogOpen = true,
                 newChatQuery = "",
-                searchResultUser = null,
-                newChatError = null
+                searchResults = initialSuggested,
+                selectedUser = null,
+                newChatError = null,
+                isSearchingUser = false,
+                isCreatingChat = false
             )
         }
     }
@@ -167,66 +162,63 @@ class HomeViewModel(
             it.copy(
                 isNewChatDialogOpen = false,
                 newChatQuery = "",
-                searchResultUser = null,
-                newChatError = null
+                searchResults = emptyList(),
+                selectedUser = null,
+                newChatError = null,
+                isCreatingChat = false
             )
         }
     }
 
+    /**
+     * Instant and powerful multi-user search.
+     * Updates matching users list without latency.
+     */
     fun onNewChatQueryChange(query: String) {
         _uiState.update { it.copy(newChatQuery = query, newChatError = null) }
         searchJob?.cancel()
-        val clean = query.trim().lowercase()
-        if (clean.length < 3) {
-            _uiState.update { it.copy(searchResultUser = null, isSearchingUser = false) }
-            return
-        }
 
-        searchJob = viewModelScope.launch {
-            _uiState.update { it.copy(isSearchingUser = true) }
-            delay(250) // Debounce
-            val result = authRepository.searchUserByUsername(clean)
-            result.fold(
-                onSuccess = { foundUser ->
-                    val isSelf = foundUser?.uid == _uiState.value.currentUserProfile?.uid
-                    _uiState.update {
-                        it.copy(
-                            isSearchingUser = false,
-                            searchResultUser = if (isSelf) null else foundUser,
-                            newChatError = when {
-                                isSelf -> "You cannot start a direct conversation with yourself."
-                                foundUser == null -> "No user found with username '@$clean'."
-                                else -> null
-                            }
-                        )
-                    }
-                },
-                onFailure = { error ->
-                    _uiState.update {
-                        it.copy(
-                            isSearchingUser = false,
-                            newChatError = error.localizedMessage ?: "Failed to search user."
-                        )
-                    }
-                }
-            )
+        val currentUid = _uiState.value.currentUserProfile?.uid ?: authRepository.getCurrentUserOrFallback().uid
+
+        // Instant local search (0ms)
+        val instantMatches = authRepository.searchUsers(query, currentUid)
+        _uiState.update { it.copy(searchResults = instantMatches, isSearchingUser = false) }
+
+        // If query is non-empty, run short debounced remote pass to index any newly registered users
+        if (query.trim().isNotEmpty()) {
+            searchJob = viewModelScope.launch {
+                delay(200)
+                val refreshed = authRepository.searchUsers(query, currentUid)
+                _uiState.update { it.copy(searchResults = refreshed) }
+            }
         }
     }
 
-    fun startChatWithFoundUser(
+    fun selectUserToChat(user: UserProfile) {
+        _uiState.update { it.copy(selectedUser = user) }
+    }
+
+    /**
+     * Start conversation with target user with zero-latency handoff.
+     */
+    fun startChatWithTargetUser(
+        targetUser: UserProfile,
         onSuccess: (conversationId: String, otherProfile: UserProfile) -> Unit
     ) {
-        val targetUser = _uiState.value.searchResultUser ?: return
-        val currentUser = _uiState.value.currentUserProfile
-            ?: authRepository.activeProfile.value
-            ?: return
+        val currentUser = _uiState.value.currentUserProfile ?: authRepository.getCurrentUserOrFallback()
 
         viewModelScope.launch {
             _uiState.update { it.copy(isCreatingChat = true, newChatError = null) }
             val result = chatRepository.getOrCreateDirectChat(currentUser, targetUser)
             result.fold(
                 onSuccess = { convId ->
-                    _uiState.update { it.copy(isCreatingChat = false, isNewChatDialogOpen = false) }
+                    _uiState.update {
+                        it.copy(
+                            isCreatingChat = false,
+                            isNewChatDialogOpen = false,
+                            selectedUser = null
+                        )
+                    }
                     onSuccess(convId, targetUser)
                 },
                 onFailure = { error ->
@@ -242,12 +234,12 @@ class HomeViewModel(
     }
 
     fun openProfileDialog() {
-        val profile = _uiState.value.currentUserProfile
+        val profile = _uiState.value.currentUserProfile ?: authRepository.getCurrentUserOrFallback()
         _uiState.update {
             it.copy(
                 isProfileDialogOpen = true,
-                editDisplayName = profile?.displayName ?: "",
-                editStatusMessage = profile?.statusMessage ?: ""
+                editDisplayName = profile.displayName,
+                editStatusMessage = profile.statusMessage
             )
         }
     }
@@ -265,7 +257,7 @@ class HomeViewModel(
     }
 
     fun saveProfile() {
-        val profile = _uiState.value.currentUserProfile ?: return
+        val profile = _uiState.value.currentUserProfile ?: authRepository.getCurrentUserOrFallback()
         viewModelScope.launch {
             _uiState.update { it.copy(isSavingProfile = true) }
             authRepository.updateProfile(

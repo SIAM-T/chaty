@@ -43,9 +43,11 @@ class ChatRepository private constructor() {
             return@callbackFlow
         }
 
+        // Emit local conversations immediately for zero-latency UI rendering
+        trySend(localConversations.value[uid] ?: emptyList())
+
         val ref = FirebaseManager.userConversationsRef?.child(uid)
         if (ref == null) {
-            trySend(localConversations.value[uid] ?: emptyList())
             awaitClose {}
             return@callbackFlow
         }
@@ -161,9 +163,11 @@ class ChatRepository private constructor() {
             return@callbackFlow
         }
 
+        // Emit local cached messages immediately so user never sees a blank screen or spinner
+        trySend(localMessages.value[conversationId] ?: emptyList())
+
         val query = FirebaseManager.messagesRef?.child(conversationId)?.limitToLast(limit)
         if (query == null) {
-            trySend(localMessages.value[conversationId] ?: emptyList())
             awaitClose {}
             return@callbackFlow
         }
@@ -458,10 +462,11 @@ class ChatRepository private constructor() {
             return@callbackFlow
         }
 
+        val local = localLiveDraft.value[conversationId]
+        trySend(if (local?.uid != currentUid) local else null)
+
         val ref = FirebaseManager.typingRef?.child(conversationId)
         if (ref == null) {
-            val local = localLiveDraft.value[conversationId]
-            trySend(if (local?.uid != currentUid) local else null)
             awaitClose {}
             return@callbackFlow
         }

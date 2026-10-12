@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.ConversationItem
 import com.example.model.UserProfile
+import kotlin.math.absoluteValue
 import com.example.ui.components.ChatyBrandLogo
 import com.example.ui.components.UserAvatar
 import com.example.ui.theme.Cyan400
@@ -311,12 +313,12 @@ fun HomeScreen(
             query = uiState.newChatQuery,
             onQueryChange = viewModel::onNewChatQueryChange,
             isSearching = uiState.isSearchingUser,
-            searchResult = uiState.searchResultUser,
+            searchResults = uiState.searchResults,
             error = uiState.newChatError,
             isCreating = uiState.isCreatingChat,
             onDismiss = viewModel::closeNewChatDialog,
-            onStartChat = {
-                viewModel.startChatWithFoundUser { convId, otherUser ->
+            onSelectUser = { targetUser ->
+                viewModel.startChatWithTargetUser(targetUser) { convId, otherUser ->
                     onConversationSelected(
                         convId,
                         otherUser.uid,
@@ -470,56 +472,68 @@ fun NewChatDialog(
     query: String,
     onQueryChange: (String) -> Unit,
     isSearching: Boolean,
-    searchResult: UserProfile?,
+    searchResults: List<UserProfile>,
     error: String?,
     isCreating: Boolean,
     onDismiss: () -> Unit,
-    onStartChat: () -> Unit
+    onSelectUser: (UserProfile) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                text = "New Conversation",
-                fontWeight = FontWeight.Bold
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.ChatBubbleOutline,
+                    contentDescription = null,
+                    tint = Cyan400,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Start a Conversation",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
         },
         text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 280.dp, max = 460.dp)
+            ) {
                 Text(
-                    text = "Search another registered user by their unique username:",
+                    text = "Search by username (@alice), display name, or email:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = query,
                     onValueChange = onQueryChange,
-                    placeholder = { Text("e.g. bob or alex_01") },
+                    placeholder = { Text("Search or type @username...") },
                     leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null)
+                        Icon(Icons.Default.Search, contentDescription = null, tint = Cyan400)
                     },
                     trailingIcon = {
-                        if (isSearching) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = Cyan400
-                            )
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { onQueryChange("") }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
+                            }
                         }
                     },
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("new_chat_username_input")
                 )
 
-                // Error Message
+                // Error Banner
                 error?.let { err ->
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = err,
                         color = MaterialTheme.colorScheme.error,
@@ -527,65 +541,149 @@ fun NewChatDialog(
                     )
                 }
 
-                // Found User Profile Card
-                searchResult?.let { found ->
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                        modifier = Modifier.fillMaxWidth()
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Section Title
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (query.isBlank()) "Suggested Contacts" else "Search Results (${searchResults.size})",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Cyan400
+                    )
+                    if (isSearching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Cyan400
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Results / Contacts List
+                if (searchResults.isEmpty()) {
+                    val cleanHandle = query.trim().lowercase().removePrefix("@")
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            UserAvatar(
-                                name = found.displayName.ifEmpty { found.username },
-                                avatarIndex = found.avatarColorIndex,
-                                size = 44.dp
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = found.displayName.ifEmpty { found.username },
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                Text(
-                                    text = "@${found.username}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Cyan400
-                                )
+                        Text(
+                            text = "No user found matching \"$query\"",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (cleanHandle.length >= 3) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    val custom = UserProfile(
+                                        uid = "user_$cleanHandle",
+                                        username = cleanHandle,
+                                        displayName = cleanHandle.replaceFirstChar { it.uppercase() },
+                                        email = "$cleanHandle@chaty.app",
+                                        avatarColorIndex = (cleanHandle.hashCode().absoluteValue % 6),
+                                        isOnline = true
+                                    )
+                                    onSelectUser(custom)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("Chat with @$cleanHandle")
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(searchResults, key = { it.uid }) { user ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !isCreating) {
+                                        onSelectUser(user)
+                                    }
+                                    .testTag("user_result_${user.username}")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    UserAvatar(
+                                        name = user.displayName.ifEmpty { user.username },
+                                        avatarIndex = user.avatarColorIndex,
+                                        size = 44.dp,
+                                        showOnlineIndicator = true,
+                                        isOnline = user.isOnline
+                                    )
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = user.displayName.ifEmpty { user.username },
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "@${user.username}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Cyan400
+                                        )
+                                        if (user.statusMessage.isNotEmpty()) {
+                                            Text(
+                                                text = user.statusMessage,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Button(
+                                        onClick = { onSelectUser(user) },
+                                        enabled = !isCreating,
+                                        shape = RoundedCornerShape(20.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                        modifier = Modifier.testTag("chat_now_${user.username}")
+                                    ) {
+                                        Text("Chat", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         },
-        confirmButton = {
-            Button(
-                onClick = onStartChat,
-                enabled = searchResult != null && !isCreating,
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                modifier = Modifier.testTag("start_chat_button")
-            ) {
-                if (isCreating) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                } else {
-                    Text("Chat Now")
-                }
-            }
-        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Close")
             }
         }
     )

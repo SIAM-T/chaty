@@ -19,8 +19,11 @@ object FirebaseManager {
     private var isInitialized = false
     private var cachedDatabase: FirebaseDatabase? = null
     private var cachedAuth: FirebaseAuth? = null
+    var appContext: Context? = null
+        private set
 
     fun initApp(context: Context) {
+        appContext = context.applicationContext
         if (isInitialized) return
         try {
             if (FirebaseApp.getApps(context).isEmpty()) {
