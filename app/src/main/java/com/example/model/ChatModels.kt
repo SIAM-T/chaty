@@ -12,7 +12,8 @@ data class UserProfile(
     val avatarColorIndex: Int = 0,
     val createdAt: Long = 0L,
     val lastSeen: Long = 0L,
-    val isOnline: Boolean = false
+    val isOnline: Boolean = false,
+    val isLiveStreamEnabled: Boolean = true // Live Keystroke Stream privacy setting
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "uid" to uid,
@@ -23,7 +24,8 @@ data class UserProfile(
         "avatarColorIndex" to avatarColorIndex,
         "createdAt" to createdAt,
         "lastSeen" to lastSeen,
-        "isOnline" to isOnline
+        "isOnline" to isOnline,
+        "isLiveStreamEnabled" to isLiveStreamEnabled
     )
 
     companion object {
@@ -34,10 +36,11 @@ data class UserProfile(
                 displayName = map["displayName"] as? String ?: "",
                 email = map["email"] as? String ?: "",
                 statusMessage = map["statusMessage"] as? String ?: "Hey there! I am using Chaty.",
-                avatarColorIndex = (map["avatarColorIndex"] as? Long)?.toInt() ?: 0,
-                createdAt = (map["createdAt"] as? Long) ?: 0L,
-                lastSeen = (map["lastSeen"] as? Long) ?: 0L,
-                isOnline = map["isOnline"] as? Boolean ?: false
+                avatarColorIndex = (map["avatarColorIndex"] as? Number)?.toInt() ?: 0,
+                createdAt = (map["createdAt"] as? Number)?.toLong() ?: 0L,
+                lastSeen = (map["lastSeen"] as? Number)?.toLong() ?: 0L,
+                isOnline = map["isOnline"] as? Boolean ?: false,
+                isLiveStreamEnabled = map["isLiveStreamEnabled"] as? Boolean ?: true
             )
         }
     }
@@ -58,7 +61,10 @@ data class ConversationItem(
     val lastMessageTimestamp: Long = 0L,
     val unreadCount: Int = 0,
     val otherIsOnline: Boolean = false,
-    val otherLastSeen: Long = 0L
+    val otherLastSeen: Long = 0L,
+    val pinnedMessageId: String? = null,
+    val pinnedMessageText: String? = null,
+    val activeLiveDraft: String? = null // When the other user is typing live right now!
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
@@ -69,7 +75,9 @@ data class ConversationItem(
         "lastMessage" to lastMessage,
         "lastMessageSenderId" to lastMessageSenderId,
         "lastMessageTimestamp" to lastMessageTimestamp,
-        "unreadCount" to unreadCount
+        "unreadCount" to unreadCount,
+        "pinnedMessageId" to pinnedMessageId,
+        "pinnedMessageText" to pinnedMessageText
     )
 
     companion object {
@@ -79,11 +87,13 @@ data class ConversationItem(
                 otherUid = map["otherUid"] as? String ?: "",
                 otherUsername = map["otherUsername"] as? String ?: "",
                 otherDisplayName = map["otherDisplayName"] as? String ?: "",
-                otherAvatarIndex = (map["otherAvatarIndex"] as? Long)?.toInt() ?: 0,
+                otherAvatarIndex = (map["otherAvatarIndex"] as? Number)?.toInt() ?: 0,
                 lastMessage = map["lastMessage"] as? String ?: "",
                 lastMessageSenderId = map["lastMessageSenderId"] as? String ?: "",
-                lastMessageTimestamp = (map["lastMessageTimestamp"] as? Long) ?: 0L,
-                unreadCount = (map["unreadCount"] as? Long)?.toInt() ?: 0
+                lastMessageTimestamp = (map["lastMessageTimestamp"] as? Number)?.toLong() ?: 0L,
+                unreadCount = (map["unreadCount"] as? Number)?.toInt() ?: 0,
+                pinnedMessageId = map["pinnedMessageId"] as? String,
+                pinnedMessageText = map["pinnedMessageText"] as? String
             )
         }
     }
@@ -106,7 +116,10 @@ data class ChatMessage(
     val replyToSender: String? = null,
     val isEdited: Boolean = false,
     val editedAt: Long? = null,
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
+    val reactions: Map<String, String> = emptyMap(), // uid -> emoji ("❤️", "🔥", "😂", "👍", "😮", "😢")
+    val isStarred: Boolean = false,
+    val isPinned: Boolean = false
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
         "id" to id,
@@ -127,6 +140,11 @@ data class ChatMessage(
 
     companion object {
         fun fromMap(id: String, map: Map<String, Any?>): ChatMessage {
+            val rawReactions = map["reactions"] as? Map<*, *> ?: emptyMap<Any, Any>()
+            val parsedReactions = rawReactions.mapNotNull { (k, v) ->
+                if (k is String && v is String) k to v else null
+            }.toMap()
+
             return ChatMessage(
                 id = id,
                 conversationId = map["conversationId"] as? String ?: "",
@@ -134,15 +152,32 @@ data class ChatMessage(
                 senderUsername = map["senderUsername"] as? String ?: "",
                 senderDisplayName = map["senderDisplayName"] as? String ?: "",
                 text = map["text"] as? String ?: "",
-                timestamp = (map["timestamp"] as? Long) ?: 0L,
+                timestamp = (map["timestamp"] as? Number)?.toLong() ?: 0L,
                 status = map["status"] as? String ?: "SENT",
                 replyToId = map["replyToId"] as? String,
                 replyToText = map["replyToText"] as? String,
                 replyToSender = map["replyToSender"] as? String,
                 isEdited = map["isEdited"] as? Boolean ?: false,
-                editedAt = map["editedAt"] as? Long,
-                isDeleted = map["isDeleted"] as? Boolean ?: false
+                editedAt = (map["editedAt"] as? Number)?.toLong(),
+                isDeleted = map["isDeleted"] as? Boolean ?: false,
+                reactions = parsedReactions,
+                isStarred = map["isStarred"] as? Boolean ?: false,
+                isPinned = map["isPinned"] as? Boolean ?: false
             )
         }
     }
 }
+
+/**
+ * Real-time keystroke live-draft state ("Telepathic Keystroke Stream").
+ * Stored at /typing/{conversationId}/{uid}
+ * Enables seeing the actual characters/words as the user types them live!
+ */
+data class LiveDraftState(
+    val uid: String = "",
+    val username: String = "",
+    val displayName: String = "",
+    val isTyping: Boolean = false,
+    val draftText: String = "",
+    val timestamp: Long = 0L
+)

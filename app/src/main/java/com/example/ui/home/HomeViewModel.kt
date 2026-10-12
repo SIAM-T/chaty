@@ -49,8 +49,8 @@ data class HomeUiState(
 }
 
 class HomeViewModel(
-    private val authRepository: AuthRepository = AuthRepository(),
-    private val chatRepository: ChatRepository = ChatRepository()
+    private val authRepository: AuthRepository = AuthRepository.instance,
+    private val chatRepository: ChatRepository = ChatRepository.instance
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -61,13 +61,32 @@ class HomeViewModel(
     private var searchJob: Job? = null
 
     init {
+        // Collect active profile updates (handles both Firebase Auth and Instant session)
+        viewModelScope.launch {
+            authRepository.activeProfile.collectLatest { profile ->
+                if (profile != null) {
+                    val uid = profile.uid
+                    _uiState.update {
+                        it.copy(
+                            currentUserProfile = profile,
+                            editDisplayName = profile.displayName,
+                            editStatusMessage = profile.statusMessage
+                        )
+                    }
+                    startObservingUser(uid)
+                    startObservingConversations(uid)
+                }
+            }
+        }
+
+        // Also fallback to Firebase user or demo user
         viewModelScope.launch {
             authRepository.currentUser.collectLatest { fbUser ->
                 if (fbUser != null) {
                     val uid = fbUser.uid
                     startObservingUser(uid)
                     startObservingConversations(uid)
-                } else {
+                } else if (authRepository.activeProfile.value == null) {
                     _uiState.update {
                         it.copy(
                             currentUserProfile = null,
@@ -78,18 +97,37 @@ class HomeViewModel(
                 }
             }
         }
+
+        viewModelScope.launch {
+            authRepository.demoUser.collectLatest { demo ->
+                if (demo != null) {
+                    val uid = demo.uid
+                    _uiState.update {
+                        it.copy(
+                            currentUserProfile = demo,
+                            editDisplayName = demo.displayName,
+                            editStatusMessage = demo.statusMessage
+                        )
+                    }
+                    startObservingUser(uid)
+                    startObservingConversations(uid)
+                }
+            }
+        }
     }
 
     private fun startObservingUser(uid: String) {
         profileJob?.cancel()
         profileJob = viewModelScope.launch {
             authRepository.observeUserProfile(uid).collectLatest { profile ->
-                _uiState.update {
-                    it.copy(
-                        currentUserProfile = profile,
-                        editDisplayName = profile?.displayName ?: "",
-                        editStatusMessage = profile?.statusMessage ?: ""
-                    )
+                if (profile != null) {
+                    _uiState.update {
+                        it.copy(
+                            currentUserProfile = profile,
+                            editDisplayName = profile.displayName,
+                            editStatusMessage = profile.statusMessage
+                        )
+                    }
                 }
             }
         }
@@ -146,7 +184,7 @@ class HomeViewModel(
 
         searchJob = viewModelScope.launch {
             _uiState.update { it.copy(isSearchingUser = true) }
-            delay(350) // Debounce
+            delay(250) // Debounce
             val result = authRepository.searchUserByUsername(clean)
             result.fold(
                 onSuccess = { foundUser ->
@@ -179,7 +217,9 @@ class HomeViewModel(
         onSuccess: (conversationId: String, otherProfile: UserProfile) -> Unit
     ) {
         val targetUser = _uiState.value.searchResultUser ?: return
-        val currentUser = _uiState.value.currentUserProfile ?: return
+        val currentUser = _uiState.value.currentUserProfile
+            ?: authRepository.activeProfile.value
+            ?: return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isCreatingChat = true, newChatError = null) }
@@ -243,6 +283,7 @@ class HomeViewModel(
 
     fun signOut(onSignedOut: () -> Unit) {
         authRepository.signOut()
+        _uiState.update { HomeUiState() }
         onSignedOut()
     }
 }

@@ -47,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,9 +84,11 @@ fun AuthScreen(
     val uiState by viewModel.uiState.collectAsState()
     var passwordVisible by remember { mutableStateOf(false) }
 
-    // Navigate on successful authentication
-    if (uiState.authenticatedUser != null) {
-        onAuthSuccess(uiState.authenticatedUser!!)
+    // Navigate on successful authentication safely via LaunchedEffect
+    LaunchedEffect(uiState.authenticatedUser) {
+        uiState.authenticatedUser?.let { user ->
+            onAuthSuccess(user)
+        }
     }
 
     Surface(

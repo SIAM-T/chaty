@@ -419,15 +419,27 @@ fun ConversationCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = item.lastMessage.ifEmpty { "Started conversation" },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (item.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = if (item.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+                    if (!item.activeLiveDraft.isNullOrEmpty()) {
+                        Text(
+                            text = "⚡ \"${item.activeLiveDraft}\"",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Cyan400,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        Text(
+                            text = item.lastMessage.ifEmpty { "Started conversation" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (item.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (item.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
                     // Unread Count Badge
                     if (item.unreadCount > 0) {

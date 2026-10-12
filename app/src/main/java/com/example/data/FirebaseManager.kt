@@ -16,7 +16,12 @@ object FirebaseManager {
     private const val TAG = "FirebaseManager"
     const val DATABASE_URL = "https://chaty-b563a-default-rtdb.asia-southeast1.firebasedatabase.app"
 
+    private var isInitialized = false
+    private var cachedDatabase: FirebaseDatabase? = null
+    private var cachedAuth: FirebaseAuth? = null
+
     fun initApp(context: Context) {
+        if (isInitialized) return
         try {
             if (FirebaseApp.getApps(context).isEmpty()) {
                 val app = FirebaseApp.initializeApp(context)
@@ -28,6 +33,32 @@ object FirebaseManager {
             Log.w(TAG, "Standard Firebase initialization failed: ${e.message}, trying explicit options")
             initExplicit(context)
         }
+
+        // Initialize Database instance once and enable persistence safely
+        try {
+            val db = FirebaseDatabase.getInstance(DATABASE_URL)
+            try {
+                db.setPersistenceEnabled(true)
+            } catch (e: Exception) {
+                Log.d(TAG, "Persistence notice: ${e.message}")
+            }
+            cachedDatabase = db
+        } catch (e: Exception) {
+            try {
+                cachedDatabase = FirebaseDatabase.getInstance()
+            } catch (ex: Exception) {
+                Log.w(TAG, "Fallback FirebaseDatabase init notice: ${ex.message}")
+            }
+        }
+
+        // Initialize Auth instance once
+        try {
+            cachedAuth = FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            Log.w(TAG, "FirebaseAuth init notice: ${e.message}")
+        }
+
+        isInitialized = true
     }
 
     private fun initExplicit(context: Context) {
@@ -49,35 +80,35 @@ object FirebaseManager {
 
     val auth: FirebaseAuth?
         get() {
+            if (cachedAuth != null) return cachedAuth
             return try {
-                FirebaseAuth.getInstance()
+                val a = FirebaseAuth.getInstance()
+                cachedAuth = a
+                a
             } catch (e: Exception) {
-                Log.e(TAG, "FirebaseAuth.getInstance() failed: ${e.message}")
                 null
             }
         }
 
     val database: FirebaseDatabase?
         get() {
+            if (cachedDatabase != null) return cachedDatabase
             return try {
                 val db = FirebaseDatabase.getInstance(DATABASE_URL)
-                try {
-                    db.setPersistenceEnabled(true)
-                } catch (e: Exception) {
-                    // Persistence already enabled
-                }
+                cachedDatabase = db
                 db
             } catch (e: Exception) {
                 try {
-                    FirebaseDatabase.getInstance()
+                    val db = FirebaseDatabase.getInstance()
+                    cachedDatabase = db
+                    db
                 } catch (ex: Exception) {
-                    Log.e(TAG, "FirebaseDatabase.getInstance() failed: ${ex.message}")
                     null
                 }
             }
         }
 
-    // Database Reference shortcuts (returns null if database unavailable)
+    // Database Reference shortcuts (returns null safely if database is unavailable)
     val usersRef: DatabaseReference? get() = database?.getReference("users")
     val usernamesRef: DatabaseReference? get() = database?.getReference("usernames")
     val conversationsRef: DatabaseReference? get() = database?.getReference("conversations")
@@ -85,6 +116,8 @@ object FirebaseManager {
     val messagesRef: DatabaseReference? get() = database?.getReference("messages")
     val typingRef: DatabaseReference? get() = database?.getReference("typing")
     val presenceRef: DatabaseReference? get() = database?.getReference("presence")
+    val reactionsRef: DatabaseReference? get() = database?.getReference("reactions")
+    val starredMessagesRef: DatabaseReference? get() = database?.getReference("starred_messages")
 
     private var connectedListener: ValueEventListener? = null
     private var connectedRef: DatabaseReference? = null

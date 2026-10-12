@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.AuthRepository
 import com.example.data.FirebaseManager
 import com.example.model.UserProfile
 import com.example.ui.auth.AuthScreen
@@ -77,12 +78,16 @@ fun ChatyApp() {
     val homeUiState by homeViewModel.uiState.collectAsState()
     val authUiState by authViewModel.uiState.collectAsState()
 
+    val activeProfile by AuthRepository.instance.activeProfile.collectAsState()
     var activeConversation by remember { mutableStateOf<ActiveConversation?>(null) }
     var currentUid by remember { mutableStateOf(FirebaseManager.auth?.currentUser?.uid) }
 
     LaunchedEffect(Unit) {
-        currentUid = FirebaseManager.auth?.currentUser?.uid
+        currentUid = FirebaseManager.auth?.currentUser?.uid ?: AuthRepository.instance.activeProfile.value?.uid
     }
+
+    val isAuthenticated = currentUid != null || authUiState.authenticatedUser != null || activeProfile != null
+    val effectiveUid = currentUid ?: authUiState.authenticatedUser?.uid ?: activeProfile?.uid ?: ""
 
     ChatyTheme(darkTheme = homeUiState.isDarkTheme) {
         Surface(
@@ -94,7 +99,7 @@ fun ChatyApp() {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val isWideScreen = maxWidth >= 700.dp
 
-                if (currentUid == null && authUiState.authenticatedUser == null) {
+                if (!isAuthenticated) {
                     // Auth Screen
                     AuthScreen(
                         viewModel = authViewModel,
@@ -104,7 +109,6 @@ fun ChatyApp() {
                     )
                 } else {
                     // Authenticated Experience
-                    val effectiveUid = currentUid ?: authUiState.authenticatedUser?.uid ?: ""
 
                     if (isWideScreen) {
                         // Desktop / Tablet Two-Panel Layout

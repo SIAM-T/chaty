@@ -28,13 +28,20 @@ data class AuthUiState(
 )
 
 class AuthViewModel(
-    private val authRepository: AuthRepository = AuthRepository()
+    private val authRepository: AuthRepository = AuthRepository.instance
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
     private var usernameCheckJob: Job? = null
+
+    init {
+        // Automatically pickup any already active session
+        authRepository.activeProfile.value?.let { profile ->
+            _uiState.update { it.copy(authenticatedUser = profile) }
+        }
+    }
 
     fun toggleMode() {
         _uiState.update {
@@ -59,17 +66,17 @@ class AuthViewModel(
     }
 
     fun onUsernameChange(username: String) {
-        _uiState.update { it.copy(username = username, errorMessage = null) }
-        checkUsernameAvailability(username)
+        val clean = username.trim().lowercase()
+        _uiState.update { it.copy(username = clean, errorMessage = null) }
+        checkUsernameAvailability(clean)
     }
 
     fun onDisplayNameChange(displayName: String) {
         _uiState.update { it.copy(displayName = displayName, errorMessage = null) }
     }
 
-    private fun checkUsernameAvailability(username: String) {
+    private fun checkUsernameAvailability(clean: String) {
         usernameCheckJob?.cancel()
-        val clean = username.trim().lowercase()
         if (clean.length < 3) {
             _uiState.update { it.copy(isCheckingUsername = false, isUsernameAvailable = null) }
             return
@@ -77,13 +84,22 @@ class AuthViewModel(
 
         usernameCheckJob = viewModelScope.launch {
             _uiState.update { it.copy(isCheckingUsername = true) }
-            delay(400) // Debounce
-            val available = authRepository.isUsernameAvailable(clean)
-            _uiState.update {
-                it.copy(
-                    isCheckingUsername = false,
-                    isUsernameAvailable = available
-                )
+            delay(300) // Debounce
+            try {
+                val available = authRepository.isUsernameAvailable(clean)
+                _uiState.update {
+                    it.copy(
+                        isCheckingUsername = false,
+                        isUsernameAvailable = available
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isCheckingUsername = false,
+                        isUsernameAvailable = true
+                    )
+                }
             }
         }
     }
@@ -96,24 +112,25 @@ class AuthViewModel(
         }
 
         if (state.isSignUpMode) {
-            if (state.username.isBlank()) {
+            val userClean = state.username.trim().lowercase()
+            if (userClean.isBlank()) {
                 _uiState.update { it.copy(errorMessage = "Please choose a username.") }
                 return
             }
-            if (state.username.trim().length < 3) {
+            if (userClean.length < 3) {
                 _uiState.update { it.copy(errorMessage = "Username must be at least 3 characters.") }
-                return
-            }
-            if (state.pass != state.confirmPass) {
-                _uiState.update { it.copy(errorMessage = "Passwords do not match.") }
                 return
             }
             if (state.pass.length < 6) {
                 _uiState.update { it.copy(errorMessage = "Password must be at least 6 characters.") }
                 return
             }
+            if (state.confirmPass.isNotBlank() && state.pass != state.confirmPass) {
+                _uiState.update { it.copy(errorMessage = "Passwords do not match.") }
+                return
+            }
             if (state.isUsernameAvailable == false) {
-                _uiState.update { it.copy(errorMessage = "Username is already taken. Please choose another.") }
+                _uiState.update { it.copy(errorMessage = "Username '@$userClean' is already taken. Please choose another.") }
                 return
             }
 
@@ -165,7 +182,7 @@ class AuthViewModel(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = error.localizedMessage ?: "Sign up failed. Please try again."
+                            errorMessage = error.localizedMessage ?: "Sign up notice. Try logging in or use Instant Demo."
                         )
                     }
                 }
@@ -218,7 +235,7 @@ class AuthViewModel(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            successMessage = "Password reset email sent. Check your inbox."
+                            successMessage = "Password reset instructions sent. Check your inbox."
                         )
                     }
                 },
