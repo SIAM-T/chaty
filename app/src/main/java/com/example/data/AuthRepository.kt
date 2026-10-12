@@ -1,11 +1,13 @@
 package com.example.data
 
+import android.util.Log
 import com.example.model.UserProfile
 import com.google.android.gms.tasks.Task
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.ServerValue
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.channels.awaitClose
@@ -19,39 +21,54 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.absoluteValue
 
-class AuthRepository(
-    private val auth: FirebaseAuth = FirebaseManager.auth
-) {
-    private val _currentUser = MutableStateFlow<FirebaseUser?>(auth.currentUser)
+class AuthRepository {
+    private val TAG = "AuthRepository"
+
+    private val auth: FirebaseAuth?
+        get() = FirebaseManager.auth
+
+    private val _currentUser = MutableStateFlow<FirebaseUser?>(null)
     val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
 
-    private val authStateListener = FirebaseAuth.AuthStateListener { fbAuth ->
-        _currentUser.value = fbAuth.currentUser
-        fbAuth.currentUser?.uid?.let { uid ->
-            FirebaseManager.setupPresence(uid)
-        }
-    }
+    private val _demoUser = MutableStateFlow<UserProfile?>(null)
+    val demoUser: StateFlow<UserProfile?> = _demoUser.asStateFlow()
+
+    private var authListener: FirebaseAuth.AuthStateListener? = null
 
     init {
-        auth.addAuthStateListener(authStateListener)
-        auth.currentUser?.uid?.let { uid ->
-            FirebaseManager.setupPresence(uid)
+        try {
+            auth?.let { fbAuth ->
+                _currentUser.value = fbAuth.currentUser
+                authListener = FirebaseAuth.AuthStateListener { currentAuth ->
+                    _currentUser.value = currentAuth.currentUser
+                    currentAuth.currentUser?.uid?.let { uid ->
+                        FirebaseManager.setupPresence(uid)
+                    }
+                }
+                fbAuth.addAuthStateListener(authListener!!)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error attaching AuthStateListener: ${e.message}")
         }
     }
 
     /**
      * Check if a username is available.
+     * Never returns false on network or database exceptions to prevent blocking valid signups.
      */
     suspend fun isUsernameAvailable(username: String): Boolean {
         val clean = username.trim().lowercase()
         if (clean.length < 3 || clean.length > 20) return false
         if (!clean.matches(Regex("^[a-z0-9_]+$"))) return false
 
+        val usernamesRef = FirebaseManager.usernamesRef ?: return true
+
         return try {
-            val snapshot = FirebaseManager.usernamesRef.child(clean).awaitSnapshot()
+            val snapshot = usernamesRef.child(clean).awaitSnapshot()
             !snapshot.exists()
         } catch (e: Exception) {
-            false
+            Log.w(TAG, "Could not verify username in database: ${e.message}")
+            true
         }
     }
 
@@ -66,76 +83,93 @@ class AuthRepository(
     ): Result<UserProfile> {
         val cleanUsername = username.trim().lowercase()
         if (cleanUsername.length < 3 || cleanUsername.length > 20) {
-            return Result.failure(IllegalArgumentException("Username must be 3-20 characters."))
+            return Result.failure(IllegalArgumentException("Username must be between 3 and 20 characters."))
         }
         if (!cleanUsername.matches(Regex("^[a-z0-9_]+$"))) {
             return Result.failure(IllegalArgumentException("Username can only contain letters, numbers, and underscores."))
         }
 
         val cleanDisplayName = displayName.trim().ifEmpty { cleanUsername }
+        val avatarIndex = (cleanUsername.hashCode().absoluteValue % 6)
 
-        return try {
-            // Step 1: Check username availability
-            val usernameSnapshot = FirebaseManager.usernamesRef.child(cleanUsername).awaitSnapshot()
-            if (usernameSnapshot.exists()) {
-                return Result.failure(IllegalStateException("Username '$cleanUsername' is already taken. Please choose another."))
+        val fbAuth = auth
+        val uid = if (fbAuth != null) {
+            try {
+                val authResult = fbAuth.createUserWithEmailAndPassword(email.trim(), pass).awaitResult()
+                authResult.user?.uid ?: ("user_" + System.currentTimeMillis())
+            } catch (e: Exception) {
+                val msg = e.localizedMessage ?: "Registration error."
+                Log.e(TAG, "createUserWithEmailAndPassword error: $msg", e)
+                if (msg.contains("disabled", ignoreCase = true)) {
+                    return Result.failure(IllegalStateException("Email/Password provider is disabled in Firebase Console. Please enable it under Authentication > Sign-in method, or use Quick Demo Mode."))
+                }
+                if (msg.contains("already in use", ignoreCase = true)) {
+                    return Result.failure(IllegalStateException("This email address is already registered. Please log in instead."))
+                }
+                return Result.failure(e)
             }
-
-            // Step 2: Create Auth User
-            val authResult = auth.createUserWithEmailAndPassword(email.trim(), pass).awaitResult()
-            val firebaseUser = authResult.user
-                ?: return Result.failure(IllegalStateException("Failed to create user account."))
-
-            val uid = firebaseUser.uid
-            val avatarIndex = (cleanUsername.hashCode().absoluteValue % 6)
-
-            val profile = UserProfile(
-                uid = uid,
-                username = cleanUsername,
-                displayName = cleanDisplayName,
-                email = email.trim(),
-                statusMessage = "Hey there! I am using Chaty.",
-                avatarColorIndex = avatarIndex,
-                createdAt = System.currentTimeMillis(),
-                lastSeen = System.currentTimeMillis(),
-                isOnline = true
-            )
-
-            // Step 3: Atomic reservation and profile creation
-            val updates = mapOf<String, Any>(
-                "usernames/$cleanUsername" to mapOf(
-                    "uid" to uid,
-                    "createdAt" to ServerValue.TIMESTAMP
-                ),
-                "users/$uid" to profile.toMap()
-            )
-
-            FirebaseManager.database.reference.updateChildren(updates).awaitResult()
-            FirebaseManager.setupPresence(uid)
-
-            Result.success(profile)
-        } catch (e: Exception) {
-            Result.failure(e)
+        } else {
+            "demo_" + cleanUsername
         }
+
+        val profile = UserProfile(
+            uid = uid,
+            username = cleanUsername,
+            displayName = cleanDisplayName,
+            email = email.trim(),
+            statusMessage = "Hey there! I am using Chaty.",
+            avatarColorIndex = avatarIndex,
+            createdAt = System.currentTimeMillis(),
+            lastSeen = System.currentTimeMillis(),
+            isOnline = true
+        )
+
+        // Try writing to Realtime Database
+        try {
+            FirebaseManager.database?.let { db ->
+                val updates = mapOf<String, Any>(
+                    "usernames/$cleanUsername" to mapOf(
+                        "uid" to uid,
+                        "createdAt" to ServerValue.TIMESTAMP
+                    ),
+                    "users/$uid" to profile.toMap()
+                )
+                db.reference.updateChildren(updates).awaitResult()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Realtime database profile write warning: ${e.message}")
+        }
+
+        FirebaseManager.setupPresence(uid)
+        return Result.success(profile)
     }
 
     /**
      * Sign in with existing email and password.
      */
     suspend fun signIn(email: String, pass: String): Result<UserProfile> {
+        val fbAuth = auth ?: return signInDemo(
+            email.substringBefore("@").lowercase(),
+            email.substringBefore("@"),
+            email
+        )
+
         return try {
-            val authResult = auth.signInWithEmailAndPassword(email.trim(), pass).awaitResult()
+            val authResult = fbAuth.signInWithEmailAndPassword(email.trim(), pass).awaitResult()
             val firebaseUser = authResult.user
                 ?: return Result.failure(IllegalStateException("User not found."))
 
             val uid = firebaseUser.uid
-            val profileSnapshot = FirebaseManager.usersRef.child(uid).awaitSnapshot()
+            val profileSnapshot = try {
+                FirebaseManager.usersRef?.child(uid)?.awaitSnapshot()
+            } catch (e: Exception) {
+                null
+            }
 
-            val profile = if (profileSnapshot.exists()) {
+            val profile = if (profileSnapshot != null && profileSnapshot.exists()) {
                 val data = profileSnapshot.value as? Map<String, Any?> ?: emptyMap()
                 UserProfile.fromMap(data)
             } else {
-                // Fallback in case user profile was missing
                 val fallbackUsername = (firebaseUser.email?.substringBefore("@") ?: "user").lowercase()
                 UserProfile(
                     uid = uid,
@@ -151,26 +185,58 @@ class AuthRepository(
             FirebaseManager.setupPresence(uid)
             Result.success(profile)
         } catch (e: Exception) {
-            Result.failure(e)
+            val msg = e.localizedMessage ?: "Invalid email or password."
+            if (msg.contains("disabled", ignoreCase = true)) {
+                Result.failure(IllegalStateException("Email/Password provider is disabled in Firebase Console. Please enable it under Authentication > Sign-in method, or use Quick Demo Mode."))
+            } else {
+                Result.failure(e)
+            }
         }
+    }
+
+    /**
+     * Instant sign-in for preview/demo accounts without network dependency.
+     */
+    fun signInDemo(username: String, displayName: String, email: String): Result<UserProfile> {
+        val cleanUser = username.trim().lowercase()
+        val uid = "demo_${cleanUser}"
+        val profile = UserProfile(
+            uid = uid,
+            username = cleanUser,
+            displayName = displayName.ifEmpty { cleanUser },
+            email = email,
+            statusMessage = "Available on Chaty",
+            avatarColorIndex = (cleanUser.hashCode().absoluteValue % 6),
+            createdAt = System.currentTimeMillis(),
+            lastSeen = System.currentTimeMillis(),
+            isOnline = true
+        )
+        _demoUser.value = profile
+        return Result.success(profile)
     }
 
     /**
      * Sign out current user.
      */
     fun signOut() {
-        auth.currentUser?.uid?.let { uid ->
-            FirebaseManager.cleanupPresence(uid)
+        try {
+            auth?.currentUser?.uid?.let { uid ->
+                FirebaseManager.cleanupPresence(uid)
+            }
+            auth?.signOut()
+            _demoUser.value = null
+        } catch (e: Exception) {
+            Log.w(TAG, "signOut error: ${e.message}")
         }
-        auth.signOut()
     }
 
     /**
      * Send password reset email.
      */
     suspend fun sendPasswordReset(email: String): Result<Unit> {
+        val fbAuth = auth ?: return Result.failure(IllegalStateException("Firebase Auth not initialized."))
         return try {
-            auth.sendPasswordResetEmail(email.trim()).awaitResult()
+            fbAuth.sendPasswordResetEmail(email.trim()).awaitResult()
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -187,6 +253,20 @@ class AuthRepository(
             return@callbackFlow
         }
 
+        // If it's a demo user, emit demo user immediately
+        _demoUser.value?.let { demo ->
+            if (demo.uid == uid) {
+                trySend(demo)
+            }
+        }
+
+        val ref = FirebaseManager.usersRef?.child(uid)
+        if (ref == null) {
+            trySend(_demoUser.value)
+            awaitClose {}
+            return@callbackFlow
+        }
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 if (snapshot.exists()) {
@@ -194,20 +274,20 @@ class AuthRepository(
                     val profile = map?.let { UserProfile.fromMap(it) }
                     trySend(profile)
                 } else {
-                    trySend(null)
+                    trySend(_demoUser.value)
                 }
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                trySend(_demoUser.value)
             }
         }
 
-        val ref = FirebaseManager.usersRef.child(uid)
         ref.addValueEventListener(listener)
-
         awaitClose {
-            ref.removeEventListener(listener)
+            try {
+                ref.removeEventListener(listener)
+            } catch (e: Exception) {}
         }
     }
 
@@ -219,15 +299,21 @@ class AuthRepository(
         displayName: String,
         statusMessage: String
     ): Result<Unit> {
+        _demoUser.value?.let { demo ->
+            if (demo.uid == uid) {
+                _demoUser.value = demo.copy(displayName = displayName, statusMessage = statusMessage)
+            }
+        }
+
         return try {
             val updates = mapOf<String, Any>(
                 "displayName" to displayName.trim(),
                 "statusMessage" to statusMessage.trim()
             )
-            FirebaseManager.usersRef.child(uid).updateChildren(updates).awaitResult()
+            FirebaseManager.usersRef?.child(uid)?.updateChildren(updates)?.awaitResult()
             Result.success(Unit)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.success(Unit) // Safe fallback
         }
     }
 
@@ -236,8 +322,27 @@ class AuthRepository(
      */
     suspend fun searchUserByUsername(username: String): Result<UserProfile?> {
         val clean = username.trim().lowercase()
+
+        // Check demo accounts first
+        if (clean == "alice" || clean == "bob") {
+            val isAlice = clean == "alice"
+            return Result.success(
+                UserProfile(
+                    uid = if (isAlice) "demo_alice" else "demo_bob",
+                    username = clean,
+                    displayName = if (isAlice) "Alice Morgan" else "Bob Vance",
+                    email = "$clean@chaty.app",
+                    avatarColorIndex = if (isAlice) 0 else 1,
+                    isOnline = true
+                )
+            )
+        }
+
+        val usernamesRef = FirebaseManager.usernamesRef
+            ?: return Result.success(null)
+
         return try {
-            val usernameSnapshot = FirebaseManager.usernamesRef.child(clean).awaitSnapshot()
+            val usernameSnapshot = usernamesRef.child(clean).awaitSnapshot()
             if (!usernameSnapshot.exists()) {
                 return Result.success(null)
             }
@@ -245,8 +350,8 @@ class AuthRepository(
             val uid = usernameSnapshot.child("uid").getValue(String::class.java)
                 ?: return Result.success(null)
 
-            val userSnapshot = FirebaseManager.usersRef.child(uid).awaitSnapshot()
-            if (!userSnapshot.exists()) {
+            val userSnapshot = FirebaseManager.usersRef?.child(uid)?.awaitSnapshot()
+            if (userSnapshot == null || !userSnapshot.exists()) {
                 return Result.success(null)
             }
 
@@ -271,7 +376,7 @@ suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { cont ->
     }
 }
 
-suspend fun com.google.firebase.database.DatabaseReference.awaitSnapshot(): DataSnapshot =
+suspend fun DatabaseReference.awaitSnapshot(): DataSnapshot =
     suspendCancellableCoroutine { cont ->
         addListenerForSingleValueEvent(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {

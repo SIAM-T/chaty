@@ -489,6 +489,7 @@ fun AuthScreen(
                             onClick = {
                                 viewModel.onEmailChange("alice@chaty.app")
                                 viewModel.onPasswordChange("chaty2026")
+                                viewModel.onConfirmPasswordChange("chaty2026")
                                 viewModel.onUsernameChange("alice")
                                 viewModel.onDisplayNameChange("Alice Morgan")
                             },
@@ -503,6 +504,7 @@ fun AuthScreen(
                             onClick = {
                                 viewModel.onEmailChange("bob@chaty.app")
                                 viewModel.onPasswordChange("chaty2026")
+                                viewModel.onConfirmPasswordChange("chaty2026")
                                 viewModel.onUsernameChange("bob")
                                 viewModel.onDisplayNameChange("Bob Vance")
                             },
@@ -511,6 +513,31 @@ fun AuthScreen(
                             modifier = Modifier.testTag("demo_user_2")
                         ) {
                             Text("Fill Bob", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        TextButton(
+                            onClick = {
+                                viewModel.quickDemoSignIn("alice", "Alice Morgan", "alice@chaty.app")
+                            },
+                            modifier = Modifier.testTag("instant_alice_btn")
+                        ) {
+                            Text("⚡ Enter as Alice", color = Cyan400, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+
+                        TextButton(
+                            onClick = {
+                                viewModel.quickDemoSignIn("bob", "Bob Vance", "bob@chaty.app")
+                            },
+                            modifier = Modifier.testTag("instant_bob_btn")
+                        ) {
+                            Text("⚡ Enter as Bob", color = Cyan400, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

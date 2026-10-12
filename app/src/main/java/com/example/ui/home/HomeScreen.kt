@@ -28,7 +28,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
@@ -684,7 +684,7 @@ fun ProfileDialog(
                             .fillMaxWidth()
                             .testTag("logout_button")
                     ) {
-                        Icon(Icons.Default.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Log Out", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
                     }

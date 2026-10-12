@@ -76,11 +76,13 @@ fun ChatyTheme(
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
-                window.statusBarColor = colorScheme.background.toArgb()
-                window.navigationBarColor = colorScheme.background.toArgb()
-                val windowInsetsController = WindowCompat.getInsetsController(window, view)
-                windowInsetsController.isAppearanceLightStatusBars = !darkTheme
-                windowInsetsController.isAppearanceLightNavigationBars = !darkTheme
+                try {
+                    val windowInsetsController = WindowCompat.getInsetsController(window, view)
+                    windowInsetsController.isAppearanceLightStatusBars = !darkTheme
+                    windowInsetsController.isAppearanceLightNavigationBars = !darkTheme
+                } catch (e: Exception) {
+                    // Safe guard against window insets controller errors
+                }
             }
         }
     }

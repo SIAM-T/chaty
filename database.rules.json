@@ -4,7 +4,7 @@
     ".write": false,
 
     "usernames": {
-      ".read": "auth != null",
+      ".read": true,
       "$username": {
         ".write": "auth != null && (!data.exists() || data.child('uid').val() === auth.uid) && newData.child('uid').val() === auth.uid",
         ".validate": "newData.hasChildren(['uid']) && newData.child('uid').isString() && $username.length >= 3 && $username.length <= 20"

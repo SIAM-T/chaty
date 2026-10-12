@@ -78,10 +78,10 @@ fun ChatyApp() {
     val authUiState by authViewModel.uiState.collectAsState()
 
     var activeConversation by remember { mutableStateOf<ActiveConversation?>(null) }
-    var currentUid by remember { mutableStateOf(FirebaseManager.auth.currentUser?.uid) }
+    var currentUid by remember { mutableStateOf(FirebaseManager.auth?.currentUser?.uid) }
 
-    LaunchedEffect(FirebaseManager.auth.currentUser) {
-        currentUid = FirebaseManager.auth.currentUser?.uid
+    LaunchedEffect(Unit) {
+        currentUid = FirebaseManager.auth?.currentUser?.uid
     }
 
     ChatyTheme(darkTheme = homeUiState.isDarkTheme) {
@@ -137,6 +137,7 @@ fun ChatyApp() {
                                     onSignOut = {
                                         activeConversation = null
                                         currentUid = null
+                                        authViewModel.resetAuthState()
                                     }
                                 )
                             }
@@ -229,6 +230,7 @@ fun ChatyApp() {
                                     onSignOut = {
                                         activeConversation = null
                                         currentUid = null
+                                        authViewModel.resetAuthState()
                                     }
                                 )
                             }

@@ -13,9 +13,9 @@ import org.robolectric.annotation.Config
 class ExampleRobolectricTest {
 
   @Test
-  fun readStringFromContext() {
-    val context = ApplicationProvider.getApplicationContext<Context>()
-    val appName = context.getString(R.string.app_name)
-    assertEquals("Chaty", appName)
+  fun testLaunchMainActivity() {
+    val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java)
+    val activity = controller.setup().get()
+    org.junit.Assert.assertNotNull(activity)
   }
 }

@@ -100,6 +100,10 @@ class AuthViewModel(
                 _uiState.update { it.copy(errorMessage = "Please choose a username.") }
                 return
             }
+            if (state.username.trim().length < 3) {
+                _uiState.update { it.copy(errorMessage = "Username must be at least 3 characters.") }
+                return
+            }
             if (state.pass != state.confirmPass) {
                 _uiState.update { it.copy(errorMessage = "Passwords do not match.") }
                 return
@@ -109,7 +113,7 @@ class AuthViewModel(
                 return
             }
             if (state.isUsernameAvailable == false) {
-                _uiState.update { it.copy(errorMessage = "Username is already taken.") }
+                _uiState.update { it.copy(errorMessage = "Username is already taken. Please choose another.") }
                 return
             }
 
@@ -117,6 +121,23 @@ class AuthViewModel(
         } else {
             performSignIn()
         }
+    }
+
+    fun quickDemoSignIn(username: String, displayName: String, email: String) {
+        val result = authRepository.signInDemo(username, displayName, email)
+        result.fold(
+            onSuccess = { user ->
+                _uiState.update {
+                    it.copy(
+                        authenticatedUser = user,
+                        successMessage = "Signed in as ${user.displayName}."
+                    )
+                }
+            },
+            onFailure = { error ->
+                _uiState.update { it.copy(errorMessage = error.localizedMessage) }
+            }
+        )
     }
 
     private fun performSignUp() {
@@ -215,5 +236,9 @@ class AuthViewModel(
 
     fun clearMessages() {
         _uiState.update { it.copy(errorMessage = null, successMessage = null) }
+    }
+
+    fun resetAuthState() {
+        _uiState.update { AuthUiState() }
     }
 }

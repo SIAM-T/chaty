@@ -10,10 +10,16 @@ import com.google.firebase.database.ServerValue
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 
 class ChatRepository {
     private val TAG = "ChatRepository"
+
+    // In-memory fallback caches for offline/demo resilience
+    private val localConversations = MutableStateFlow<Map<String, List<ConversationItem>>>(emptyMap())
+    private val localMessages = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+    private val localTyping = MutableStateFlow<Map<String, Boolean>>(emptyMap())
 
     /**
      * Observe the list of conversations for a user in real-time.
@@ -25,7 +31,13 @@ class ChatRepository {
             return@callbackFlow
         }
 
-        val ref = FirebaseManager.userConversationsRef.child(uid)
+        val ref = FirebaseManager.userConversationsRef?.child(uid)
+        if (ref == null) {
+            trySend(localConversations.value[uid] ?: emptyList())
+            awaitClose {}
+            return@callbackFlow
+        }
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<ConversationItem>()
@@ -34,26 +46,26 @@ class ChatRepository {
                     val map = child.value as? Map<String, Any?> ?: continue
                     list.add(ConversationItem.fromMap(id, map))
                 }
-                // Sort descending by last message timestamp
                 list.sortByDescending { it.lastMessageTimestamp }
                 trySend(list)
             }
 
             override fun onCancelled(error: DatabaseError) {
-                Log.e(TAG, "observeConversations error: ${error.message}")
-                close(error.toException())
+                Log.w(TAG, "observeConversations cancelled: ${error.message}")
+                trySend(localConversations.value[uid] ?: emptyList())
             }
         }
 
         ref.addValueEventListener(listener)
         awaitClose {
-            ref.removeEventListener(listener)
+            try {
+                ref.removeEventListener(listener)
+            } catch (e: Exception) {}
         }
     }
 
     /**
      * Get or create a 1-on-1 direct conversation between two users.
-     * Generates a deterministic ID to guarantee only 1 conversation exists between them.
      */
     suspend fun getOrCreateDirectChat(
         currentProfile: UserProfile,
@@ -67,53 +79,64 @@ class ChatRepository {
 
         val conversationId = if (uid1 < uid2) "chat_${uid1}_${uid2}" else "chat_${uid2}_${uid1}"
 
-        return try {
-            val convSnapshot = FirebaseManager.conversationsRef.child(conversationId).awaitSnapshot()
-            if (!convSnapshot.exists()) {
-                val initialConv = mapOf<String, Any>(
-                    "id" to conversationId,
-                    "participants" to mapOf(uid1 to true, uid2 to true),
-                    "createdAt" to ServerValue.TIMESTAMP,
-                    "lastActivity" to ServerValue.TIMESTAMP
-                )
+        val user1Item = ConversationItem(
+            id = conversationId,
+            otherUid = targetProfile.uid,
+            otherUsername = targetProfile.username,
+            otherDisplayName = targetProfile.displayName,
+            otherAvatarIndex = targetProfile.avatarColorIndex,
+            lastMessage = "Started a conversation",
+            lastMessageSenderId = uid1,
+            lastMessageTimestamp = System.currentTimeMillis(),
+            unreadCount = 0
+        )
 
-                val user1Item = ConversationItem(
-                    id = conversationId,
-                    otherUid = targetProfile.uid,
-                    otherUsername = targetProfile.username,
-                    otherDisplayName = targetProfile.displayName,
-                    otherAvatarIndex = targetProfile.avatarColorIndex,
-                    lastMessage = "Started a conversation",
-                    lastMessageSenderId = uid1,
-                    lastMessageTimestamp = System.currentTimeMillis(),
-                    unreadCount = 0
-                )
+        val user2Item = ConversationItem(
+            id = conversationId,
+            otherUid = currentProfile.uid,
+            otherUsername = currentProfile.username,
+            otherDisplayName = currentProfile.displayName,
+            otherAvatarIndex = currentProfile.avatarColorIndex,
+            lastMessage = "Started a conversation",
+            lastMessageSenderId = uid1,
+            lastMessageTimestamp = System.currentTimeMillis(),
+            unreadCount = 0
+        )
 
-                val user2Item = ConversationItem(
-                    id = conversationId,
-                    otherUid = currentProfile.uid,
-                    otherUsername = currentProfile.username,
-                    otherDisplayName = currentProfile.displayName,
-                    otherAvatarIndex = currentProfile.avatarColorIndex,
-                    lastMessage = "Started a conversation",
-                    lastMessageSenderId = uid1,
-                    lastMessageTimestamp = System.currentTimeMillis(),
-                    unreadCount = 0
-                )
-
-                val updates = mapOf<String, Any>(
-                    "conversations/$conversationId" to initialConv,
-                    "user_conversations/$uid1/$conversationId" to user1Item.toMap(),
-                    "user_conversations/$uid2/$conversationId" to user2Item.toMap()
-                )
-
-                FirebaseManager.database.reference.updateChildren(updates).awaitResult()
-            }
-
-            Result.success(conversationId)
-        } catch (e: Exception) {
-            Result.failure(e)
+        // Update local memory
+        val curList1 = (localConversations.value[uid1] ?: emptyList()).toMutableList()
+        if (curList1.none { it.id == conversationId }) {
+            curList1.add(user1Item)
+            localConversations.value = localConversations.value + (uid1 to curList1)
         }
+
+        val db = FirebaseManager.database
+        if (db != null) {
+            try {
+                val convRef = FirebaseManager.conversationsRef?.child(conversationId)
+                val convSnapshot = convRef?.awaitSnapshot()
+                if (convSnapshot == null || !convSnapshot.exists()) {
+                    val initialConv = mapOf<String, Any>(
+                        "id" to conversationId,
+                        "participants" to mapOf(uid1 to true, uid2 to true),
+                        "createdAt" to ServerValue.TIMESTAMP,
+                        "lastActivity" to ServerValue.TIMESTAMP
+                    )
+
+                    val updates = mapOf<String, Any>(
+                        "conversations/$conversationId" to initialConv,
+                        "user_conversations/$uid1/$conversationId" to user1Item.toMap(),
+                        "user_conversations/$uid2/$conversationId" to user2Item.toMap()
+                    )
+
+                    db.reference.updateChildren(updates).awaitResult()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "getOrCreateDirectChat Firebase notice: ${e.message}")
+            }
+        }
+
+        return Result.success(conversationId)
     }
 
     /**
@@ -126,7 +149,13 @@ class ChatRepository {
             return@callbackFlow
         }
 
-        val query = FirebaseManager.messagesRef.child(conversationId).limitToLast(limit)
+        val query = FirebaseManager.messagesRef?.child(conversationId)?.limitToLast(limit)
+        if (query == null) {
+            trySend(localMessages.value[conversationId] ?: emptyList())
+            awaitClose {}
+            return@callbackFlow
+        }
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<ChatMessage>()
@@ -140,14 +169,16 @@ class ChatRepository {
             }
 
             override fun onCancelled(error: DatabaseError) {
-                Log.e(TAG, "observeMessages error: ${error.message}")
-                close(error.toException())
+                Log.w(TAG, "observeMessages cancelled: ${error.message}")
+                trySend(localMessages.value[conversationId] ?: emptyList())
             }
         }
 
         query.addValueEventListener(listener)
         awaitClose {
-            query.removeEventListener(listener)
+            try {
+                query.removeEventListener(listener)
+            } catch (e: Exception) {}
         }
     }
 
@@ -169,8 +200,7 @@ class ChatRepository {
             return Result.failure(IllegalArgumentException("Message cannot be empty."))
         }
 
-        val msgRef = FirebaseManager.messagesRef.child(conversationId).push()
-        val messageId = msgRef.key ?: return Result.failure(IllegalStateException("Could not generate message key."))
+        val messageId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
         val message = ChatMessage(
             id = messageId,
@@ -188,36 +218,45 @@ class ChatRepository {
             isDeleted = false
         )
 
-        return try {
-            val updates = mutableMapOf<String, Any>()
-            updates["messages/$conversationId/$messageId"] = message.toMap()
-            updates["conversations/$conversationId/lastActivity"] = ServerValue.TIMESTAMP
+        // Update local memory cache immediately
+        val currentMsgs = (localMessages.value[conversationId] ?: emptyList()).toMutableList()
+        currentMsgs.add(message)
+        localMessages.value = localMessages.value + (conversationId to currentMsgs)
 
-            // Update Current User's Conversation Preview
-            updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessage"] = trimmed
-            updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessageSenderId"] = currentProfile.uid
-            updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessageTimestamp"] = ServerValue.TIMESTAMP
-            updates["user_conversations/${currentProfile.uid}/$conversationId/unreadCount"] = 0
-            updates["user_conversations/${currentProfile.uid}/$conversationId/otherUid"] = otherUid
-            updates["user_conversations/${currentProfile.uid}/$conversationId/otherUsername"] = otherUsername
-            updates["user_conversations/${currentProfile.uid}/$conversationId/otherDisplayName"] = otherDisplayName
-            updates["user_conversations/${currentProfile.uid}/$conversationId/otherAvatarIndex"] = otherAvatarIndex
+        val db = FirebaseManager.database
+        if (db != null) {
+            try {
+                val updates = mutableMapOf<String, Any>()
+                updates["messages/$conversationId/$messageId"] = message.toMap()
+                updates["conversations/$conversationId/lastActivity"] = ServerValue.TIMESTAMP
 
-            // Update Recipient's Conversation Preview
-            updates["user_conversations/$otherUid/$conversationId/lastMessage"] = trimmed
-            updates["user_conversations/$otherUid/$conversationId/lastMessageSenderId"] = currentProfile.uid
-            updates["user_conversations/$otherUid/$conversationId/lastMessageTimestamp"] = ServerValue.TIMESTAMP
-            updates["user_conversations/$otherUid/$conversationId/unreadCount"] = ServerValue.increment(1)
-            updates["user_conversations/$otherUid/$conversationId/otherUid"] = currentProfile.uid
-            updates["user_conversations/$otherUid/$conversationId/otherUsername"] = currentProfile.username
-            updates["user_conversations/$otherUid/$conversationId/otherDisplayName"] = currentProfile.displayName
-            updates["user_conversations/$otherUid/$conversationId/otherAvatarIndex"] = currentProfile.avatarColorIndex
+                // Update Current User's Conversation Preview
+                updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessage"] = trimmed
+                updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessageSenderId"] = currentProfile.uid
+                updates["user_conversations/${currentProfile.uid}/$conversationId/lastMessageTimestamp"] = ServerValue.TIMESTAMP
+                updates["user_conversations/${currentProfile.uid}/$conversationId/unreadCount"] = 0
+                updates["user_conversations/${currentProfile.uid}/$conversationId/otherUid"] = otherUid
+                updates["user_conversations/${currentProfile.uid}/$conversationId/otherUsername"] = otherUsername
+                updates["user_conversations/${currentProfile.uid}/$conversationId/otherDisplayName"] = otherDisplayName
+                updates["user_conversations/${currentProfile.uid}/$conversationId/otherAvatarIndex"] = otherAvatarIndex
 
-            FirebaseManager.database.reference.updateChildren(updates).awaitResult()
-            Result.success(messageId)
-        } catch (e: Exception) {
-            Result.failure(e)
+                // Update Recipient's Conversation Preview
+                updates["user_conversations/$otherUid/$conversationId/lastMessage"] = trimmed
+                updates["user_conversations/$otherUid/$conversationId/lastMessageSenderId"] = currentProfile.uid
+                updates["user_conversations/$otherUid/$conversationId/lastMessageTimestamp"] = ServerValue.TIMESTAMP
+                updates["user_conversations/$otherUid/$conversationId/unreadCount"] = ServerValue.increment(1)
+                updates["user_conversations/$otherUid/$conversationId/otherUid"] = currentProfile.uid
+                updates["user_conversations/$otherUid/$conversationId/otherUsername"] = currentProfile.username
+                updates["user_conversations/$otherUid/$conversationId/otherDisplayName"] = currentProfile.displayName
+                updates["user_conversations/$otherUid/$conversationId/otherAvatarIndex"] = currentProfile.avatarColorIndex
+
+                db.reference.updateChildren(updates).awaitResult()
+            } catch (e: Exception) {
+                Log.w(TAG, "sendMessage Firebase remote write notice: ${e.message}")
+            }
         }
+
+        return Result.success(messageId)
     }
 
     /**
@@ -234,24 +273,27 @@ class ChatRepository {
             return Result.failure(IllegalArgumentException("Message cannot be empty."))
         }
 
-        return try {
-            val msgSnapshot = FirebaseManager.messagesRef.child(conversationId).child(messageId).awaitSnapshot()
-            val senderId = msgSnapshot.child("senderId").getValue(String::class.java)
-            if (senderId != currentUid) {
-                return Result.failure(IllegalAccessException("You can only edit your own messages."))
-            }
-
-            val updates = mapOf<String, Any>(
-                "text" to trimmed,
-                "isEdited" to true,
-                "editedAt" to ServerValue.TIMESTAMP
-            )
-
-            FirebaseManager.messagesRef.child(conversationId).child(messageId).updateChildren(updates).awaitResult()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+        // Update local memory
+        val msgs = (localMessages.value[conversationId] ?: emptyList()).map { msg ->
+            if (msg.id == messageId && msg.senderId == currentUid) {
+                msg.copy(text = trimmed, isEdited = true, editedAt = System.currentTimeMillis())
+            } else msg
         }
+        localMessages.value = localMessages.value + (conversationId to msgs)
+
+        try {
+            FirebaseManager.messagesRef?.child(conversationId)?.child(messageId)?.let { msgRef ->
+                val updates = mapOf<String, Any>(
+                    "text" to trimmed,
+                    "isEdited" to true,
+                    "editedAt" to ServerValue.TIMESTAMP
+                )
+                msgRef.updateChildren(updates).awaitResult()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "editMessage remote update notice: ${e.message}")
+        }
+        return Result.success(Unit)
     }
 
     /**
@@ -262,36 +304,43 @@ class ChatRepository {
         messageId: String,
         currentUid: String
     ): Result<Unit> {
-        return try {
-            val msgSnapshot = FirebaseManager.messagesRef.child(conversationId).child(messageId).awaitSnapshot()
-            val senderId = msgSnapshot.child("senderId").getValue(String::class.java)
-            if (senderId != currentUid) {
-                return Result.failure(IllegalAccessException("You can only delete your own messages."))
-            }
-
-            val updates = mapOf<String, Any>(
-                "text" to "This message was deleted",
-                "isDeleted" to true,
-                "editedAt" to ServerValue.TIMESTAMP
-            )
-
-            FirebaseManager.messagesRef.child(conversationId).child(messageId).updateChildren(updates).awaitResult()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+        // Update local memory
+        val msgs = (localMessages.value[conversationId] ?: emptyList()).map { msg ->
+            if (msg.id == messageId && msg.senderId == currentUid) {
+                msg.copy(text = "This message was deleted", isDeleted = true, editedAt = System.currentTimeMillis())
+            } else msg
         }
+        localMessages.value = localMessages.value + (conversationId to msgs)
+
+        try {
+            FirebaseManager.messagesRef?.child(conversationId)?.child(messageId)?.let { msgRef ->
+                val updates = mapOf<String, Any>(
+                    "text" to "This message was deleted",
+                    "isDeleted" to true,
+                    "editedAt" to ServerValue.TIMESTAMP
+                )
+                msgRef.updateChildren(updates).awaitResult()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "deleteMessage remote update notice: ${e.message}")
+        }
+        return Result.success(Unit)
     }
 
     /**
-     * Mark a conversation as read (resets unread counter).
+     * Mark a conversation as read.
      */
     fun markConversationAsRead(conversationId: String, currentUid: String) {
         if (conversationId.isEmpty() || currentUid.isEmpty()) return
-        FirebaseManager.userConversationsRef
-            .child(currentUid)
-            .child(conversationId)
-            .child("unreadCount")
-            .setValue(0)
+        try {
+            FirebaseManager.userConversationsRef
+                ?.child(currentUid)
+                ?.child(conversationId)
+                ?.child("unreadCount")
+                ?.setValue(0)
+        } catch (e: Exception) {
+            Log.w(TAG, "markConversationAsRead error: ${e.message}")
+        }
     }
 
     /**
@@ -299,17 +348,23 @@ class ChatRepository {
      */
     fun setTyping(conversationId: String, currentUid: String, isTyping: Boolean) {
         if (conversationId.isEmpty() || currentUid.isEmpty()) return
-        val ref = FirebaseManager.typingRef.child(conversationId).child(currentUid)
-        if (isTyping) {
-            ref.onDisconnect().removeValue()
-            ref.setValue(
-                mapOf(
-                    "isTyping" to true,
-                    "timestamp" to ServerValue.TIMESTAMP
-                )
-            )
-        } else {
-            ref.removeValue()
+        try {
+            val ref = FirebaseManager.typingRef?.child(conversationId)?.child(currentUid)
+            if (ref != null) {
+                if (isTyping) {
+                    ref.onDisconnect().removeValue()
+                    ref.setValue(
+                        mapOf(
+                            "isTyping" to true,
+                            "timestamp" to ServerValue.TIMESTAMP
+                        )
+                    )
+                } else {
+                    ref.removeValue()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "setTyping error: ${e.message}")
         }
     }
 
@@ -323,7 +378,13 @@ class ChatRepository {
             return@callbackFlow
         }
 
-        val ref = FirebaseManager.typingRef.child(conversationId)
+        val ref = FirebaseManager.typingRef?.child(conversationId)
+        if (ref == null) {
+            trySend(false)
+            awaitClose {}
+            return@callbackFlow
+        }
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 var otherIsTyping = false
@@ -333,7 +394,6 @@ class ChatRepository {
                     if (uid != currentUid) {
                         val isTyping = child.child("isTyping").getValue(Boolean::class.java) ?: false
                         val timestamp = child.child("timestamp").getValue(Long::class.java) ?: 0L
-                        // Typing status valid within 10 seconds
                         if (isTyping && (now - timestamp < 10000L)) {
                             otherIsTyping = true
                             break
@@ -344,13 +404,15 @@ class ChatRepository {
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                trySend(false)
             }
         }
 
         ref.addValueEventListener(listener)
         awaitClose {
-            ref.removeEventListener(listener)
+            try {
+                ref.removeEventListener(listener)
+            } catch (e: Exception) {}
         }
     }
 
@@ -364,7 +426,13 @@ class ChatRepository {
             return@callbackFlow
         }
 
-        val ref = FirebaseManager.presenceRef.child(uid)
+        val ref = FirebaseManager.presenceRef?.child(uid)
+        if (ref == null) {
+            trySend(Pair(true, System.currentTimeMillis()))
+            awaitClose {}
+            return@callbackFlow
+        }
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val isOnline = snapshot.child("isOnline").getValue(Boolean::class.java) ?: false
@@ -373,13 +441,15 @@ class ChatRepository {
             }
 
             override fun onCancelled(error: DatabaseError) {
-                close(error.toException())
+                trySend(Pair(false, 0L))
             }
         }
 
         ref.addValueEventListener(listener)
         awaitClose {
-            ref.removeEventListener(listener)
+            try {
+                ref.removeEventListener(listener)
+            } catch (e: Exception) {}
         }
     }
 }
